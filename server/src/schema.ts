@@ -750,6 +750,45 @@ export const toolInputSchemas = {
     fileKey: fileKeyField,
   }),
 
+  create_component_set: z.object({
+    nodeIds: z
+      .array(createFigmaNodeIdSchema())
+      .min(1)
+      .describe(
+        "Nodes to combine as variants. COMPONENT nodes are used as-is; FRAME/GROUP/INSTANCE nodes are first converted with figma.createComponentFromNode. Name each node 'Prop=Value, Prop2=Value2' so Figma derives variant properties."
+      ),
+    name: z.string().min(1).optional().describe("Optional name for the resulting component set"),
+    parentId: createFigmaNodeIdSchema()
+      .optional()
+      .describe("Optional parent for the component set (defaults to the first node's parent)"),
+    fileKey: fileKeyField,
+  }),
+
+  create_instance: z.object({
+    componentId: createFigmaNodeIdSchema().describe(
+      "ID of a COMPONENT or COMPONENT_SET. For a set, the default variant is instantiated and variantProperties are applied."
+    ),
+    parentId: createFigmaNodeIdSchema()
+      .optional()
+      .describe("Optional parent node ID to append the instance into (defaults to the current page)"),
+    variantProperties: z
+      .record(z.union([z.string(), z.boolean()]))
+      .optional()
+      .describe("Component property overrides, e.g. { Size: 'Large', Learned: 'Yes', Level: '4' }"),
+    name: z.string().min(1).optional().describe("Optional instance name"),
+    x: z.number().optional().describe("Optional x position"),
+    y: z.number().optional().describe("Optional y position"),
+    fileKey: fileKeyField,
+  }),
+
+  set_instance_properties: z.object({
+    nodeId: createFigmaNodeIdSchema().describe("The INSTANCE node ID"),
+    properties: z
+      .record(z.union([z.string(), z.boolean()]))
+      .describe("Component property values to set, e.g. { Level: '7', Learned: 'Yes' }"),
+    fileKey: fileKeyField,
+  }),
+
   save_screenshots: z.object({
     items: z
       .array(
@@ -950,6 +989,9 @@ const rpcToArgs: Record<
   set_selection: (nodeIds, params) => ({ nodeIds, ...params }),
   scroll_and_zoom_into_view: (nodeIds, params) => ({ nodeIds, ...params }),
   delete_nodes: (nodeIds, params) => ({ nodeIds, ...params }),
+  create_component_set: (nodeIds, params) => ({ nodeIds, ...params }),
+  create_instance: (_nodeIds, params) => ({ ...params }),
+  set_instance_properties: (nodeIds, params) => ({ ...params, nodeId: nodeIds?.[0] }),
   save_screenshots: (_nodeIds, params) => ({ ...params }),
   get_motion_styles: (_nodeIds, params) => ({ ...params }),
   get_node_motion: (nodeIds, params) => ({ ...params, nodeId: nodeIds?.[0] }),

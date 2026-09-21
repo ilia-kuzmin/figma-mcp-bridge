@@ -424,6 +424,42 @@ export function registerTools(server: McpServer, node: Node, port: number): void
   );
 
   server.tool(
+    "create_component_set",
+    "Combine nodes into a Figma component set (variants). COMPONENT nodes are used as-is; frames/groups/instances are first converted with createComponentFromNode. Name each node 'Prop=Value, Prop2=Value2' so Figma derives the variant properties. Returns the set ID and its component property definitions. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.create_component_set.shape,
+    async ({ nodeIds, fileKey, ...params }): Promise<ToolResult> => {
+      return renderResponse(() =>
+        node.sendWithParams("create_component_set", nodeIds, params, fileKey)
+      );
+    }
+  );
+
+  server.tool(
+    "create_instance",
+    "Create an instance of a COMPONENT or COMPONENT_SET, optionally inside a parent, at a position, with component/variant property overrides. Returns the instance ID and its resolved component properties. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.create_instance.shape,
+    async (args): Promise<ToolResult> => {
+      const parsed = parseToolInput(toolInputSchemas.create_instance, args);
+      if (!parsed.success) return parsed.error;
+      const { fileKey, ...params } = parsed.data;
+      return renderResponse(() =>
+        node.sendWithParams("create_instance", undefined, params, fileKey)
+      );
+    }
+  );
+
+  server.tool(
+    "set_instance_properties",
+    "Set component/variant property values on an INSTANCE node (instance.setProperties). Returns the resulting component properties. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.set_instance_properties.shape,
+    async ({ nodeId, properties, fileKey }): Promise<ToolResult> => {
+      return renderResponse(() =>
+        node.sendWithParams("set_instance_properties", [nodeId], { properties }, fileKey)
+      );
+    }
+  );
+
+  server.tool(
     "reparent_nodes",
     "Move one or more nodes into a different parent container. When multiple files are connected, specify fileKey.",
     toolInputSchemas.reparent_nodes.shape,

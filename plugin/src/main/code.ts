@@ -32,6 +32,9 @@ type RequestType =
   | "set_selection"
   | "scroll_and_zoom_into_view"
   | "delete_nodes"
+  | "create_component_set"
+  | "create_instance"
+  | "set_instance_properties"
   | "get_motion_styles"
   | "get_node_motion"
   | "apply_animation_style"
@@ -58,6 +61,9 @@ type ServerRequestParams = Record<string, unknown> & {
   track?: any;
   timelineId?: string;
   duration?: number;
+  componentId?: string;
+  variantProperties?: Record<string, string | boolean>;
+  properties?: Record<string, string | boolean>;
 };
 
 type ServerRequest = {
@@ -175,6 +181,56 @@ const getParentNodeById = async (parentId: string): Promise<BaseNode & ChildrenM
     await parent.loadAsync();
   }
   return parent;
+};
+
+const isInstanceNode = (node: BaseNode | null): node is InstanceNode =>
+  node !== null && node.type === "INSTANCE";
+
+const serializeComponentProperties = (
+  properties: ComponentProperties | undefined
+): Record<string, string | boolean> => {
+  const result: Record<string, string | boolean> = {};
+  if (!properties) return result;
+  for (const [key, value] of Object.entries(properties)) {
+    result[key] = value.value as string | boolean;
+  }
+  return result;
+};
+
+const serializePropertyDefinitions = (
+  definitions: ComponentPropertyDefinitions | undefined
+): Array<{ name: string; type: string; defaultValue: string | boolean; variantOptions?: string[] }> => {
+  if (!definitions) return [];
+  return Object.entries(definitions).map(([name, def]) => ({
+    name,
+    type: def.type,
+    defaultValue: def.defaultValue as string | boolean,
+    ...(def.variantOptions ? { variantOptions: def.variantOptions } : {}),
+  }));
+};
+
+/**
+ * `instance.setProperties` expects keys in the form `Name#id` for non-variant
+ * properties, while variant properties use the bare name. Accept bare names for
+ * both and resolve them against the instance's current property keys.
+ */
+const resolvePropertyKeys = (
+  instance: InstanceNode,
+  requested: Record<string, string | boolean>
+): Record<string, string | boolean> => {
+  const known = Object.keys(instance.componentProperties);
+  const resolved: Record<string, string | boolean> = {};
+  for (const [name, value] of Object.entries(requested)) {
+    const match =
+      known.find((key) => key === name) ?? known.find((key) => key.split("#")[0] === name);
+    if (!match) {
+      throw new Error(
+        `Unknown component property "${name}" on instance ${instance.id}. Known: ${known.join(", ") || "(none)"}`
+      );
+    }
+    resolved[match] = value;
+  }
+  return resolved;
 };
 
 const parseHexColor = (hex: string): RGB => {
@@ -349,6 +405,9 @@ const EDIT_REQUEST_TYPES = new Set<RequestType>([
   "group_nodes",
   "ungroup_node",
   "delete_nodes",
+  "create_component_set",
+  "create_instance",
+  "set_instance_properties",
   "apply_animation_style",
   "remove_animation_style",
   "apply_manual_keyframe_track",
@@ -1557,6 +1616,121 @@ const handleRequest = async (request: ServerRequest): Promise<PluginResponse> =>
           data: {
             movedCount: moved.length,
             moved,
+          },
+        };
+      }
+      case "create_component_set": {
+        if (!request.nodeIds || request.nodeIds.length === 0) {
+          throw new Error("nodeIds is required for create_component_set");
+        }
+        const components: ComponentNode[] = [];
+        for (const nodeId of request.nodeIds) {
+          const node = await getSceneNodeById(nodeId);
+          if (node.type === "COMPONENT") {
+            components.push(node);
+          } else if (node.type === "FRAME" || node.type === "GROUP" || node.type === "INSTANCE") {
+            components.push(figma.createComponentFromNode(node));
+          } else {
+            throw new Error(
+              `Node ${node.id} (${node.type}) cannot become a variant; expected COMPONENT, FRAME, GROUP or INSTANCE`
+            );
+          }
+        }
+        const explicitParentId = request.params?.parentId;
+        const parent =
+          typeof explicitParentId === "string"
+            ? await getParentNodeById(explicitParentId)
+            : (components[0].parent ?? figma.currentPage);
+        if (!supportsChildren(parent)) {
+          throw new Error("Resolved parent does not support children");
+        }
+        const set = figma.combineAsVariants(components, parent);
+        const name = request.params?.name;
+        if (typeof name === "string" && name.length > 0) {
+          set.name = name;
+        }
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: {
+            componentSetId: set.id,
+            name: set.name,
+            parentId: set.parent?.id,
+            variantCount: set.children.length,
+            propertyDefinitions: serializePropertyDefinitions(set.componentPropertyDefinitions),
+            variants: set.children.map((child) => ({ nodeId: child.id, name: child.name })),
+          },
+        };
+      }
+      case "create_instance": {
+        const componentId = request.params?.componentId;
+        if (typeof componentId !== "string") {
+          throw new Error("componentId is required for create_instance");
+        }
+        const source = await figma.getNodeByIdAsync(componentId);
+        let component: ComponentNode;
+        if (source?.type === "COMPONENT") {
+          component = source;
+        } else if (source?.type === "COMPONENT_SET") {
+          component = source.defaultVariant;
+        } else {
+          throw new Error(`Node ${componentId} is not a COMPONENT or COMPONENT_SET`);
+        }
+        const instance = component.createInstance();
+        const parentId = request.params?.parentId;
+        const parent =
+          typeof parentId === "string" ? await getParentNodeById(parentId) : figma.currentPage;
+        parent.appendChild(instance);
+        const variantProperties = request.params?.variantProperties;
+        if (variantProperties && Object.keys(variantProperties).length > 0) {
+          instance.setProperties(resolvePropertyKeys(instance, variantProperties));
+        }
+        const name = request.params?.name;
+        if (typeof name === "string" && name.length > 0) {
+          instance.name = name;
+        }
+        const x = request.params?.x;
+        const y = request.params?.y;
+        if (typeof x === "number") instance.x = x;
+        if (typeof y === "number") instance.y = y;
+        const mainComponent = await instance.getMainComponentAsync();
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: {
+            nodeId: instance.id,
+            nodeName: instance.name,
+            parentId: instance.parent?.id,
+            mainComponentId: mainComponent?.id,
+            x: instance.x,
+            y: instance.y,
+            width: instance.width,
+            height: instance.height,
+            componentProperties: serializeComponentProperties(instance.componentProperties),
+          },
+        };
+      }
+      case "set_instance_properties": {
+        const nodeId = request.nodeIds?.[0];
+        if (!nodeId) {
+          throw new Error("nodeId is required for set_instance_properties");
+        }
+        const node = await figma.getNodeByIdAsync(nodeId);
+        if (!isInstanceNode(node)) {
+          throw new Error(`Instance node not found: ${nodeId}`);
+        }
+        const properties = request.params?.properties;
+        if (!properties || Object.keys(properties).length === 0) {
+          throw new Error("properties is required for set_instance_properties");
+        }
+        node.setProperties(resolvePropertyKeys(node, properties));
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: {
+            nodeId: node.id,
+            nodeName: node.name,
+            componentProperties: serializeComponentProperties(node.componentProperties),
           },
         };
       }
